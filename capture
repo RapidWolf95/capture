@@ -139,6 +139,9 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
     done
     echo $(date) " - HANDSHAKE CAPTURED" >> caplog.txt
     pid="$(ps -e | grep airodump-ng | cut -d' ' -f1 | sed -n '1p')"      #This gets the process ID to kill
+    if [[ $pid == '' ]]; then
+      pid="$(ps -e | grep airodump-ng | cut -d' ' -f2 | sed -n '1p')"      #This gets the process ID to kill
+    fi
     echo $(date) " - Killing $pid since I have a handshake file" >> caplog.txt                #Logs the kill
     kill $pid                                     #Kills the airodump-ng process since it has a handshake by now
     if [[ $(ls /usr/share/wordlists/rockyou.txt) == '' ]]; then    #If rockyou.txt isn't unzipped, it will do that here
