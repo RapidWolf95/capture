@@ -12,11 +12,5 @@ This requires crunch if you want it to also try phone numbers.
 
 This requires an external wireless card that can go into monitoring mode. Unless you change it, this script will always use wlan1.
 
-Install and run with:
-
-cd ~
-mkdir bin
-cd bin
-git clone https://github.com/rapidwolf95/capture
-cd capture
-bash capture
+Install with: git clone https://github.com/rapidwolf95/capture
+Run with: bash capture
